@@ -33,13 +33,18 @@ summary(model_1)
 ```
 
 ```{r}
-par( bg = 'white')
-options(
-    repr.plot.width = 7,    # Largura em polegadas
-    repr.plot.height = 7,   # Altura em polegadas
-    repr.plot.res = 300,    # Resolução em dpi
-    jupyter.plot_mimetypes = "image/png"  # Formato do plot
-)
-plot(model_1)
-````
+plot(mtcars$mpg, mtcars$disp)
+```
 
+```{r}
+pred_ = unname(predict(model_1))
+```
+
+```{r}
+plot(mtcars$disp, mtcars$mpg, )
+lines(mtcars$disp, pred_)
+
+lengths(mtcars)
+```
+
+\
