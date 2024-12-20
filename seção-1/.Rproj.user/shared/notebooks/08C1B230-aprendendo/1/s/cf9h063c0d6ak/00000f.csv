@@ -1,5 +1,0 @@
-"0","model_1 = lm(mpg~dist, data = mtcars)
-"
-"2","Error in model.frame.default(formula = mpg ~ dist, data = mtcars, drop.unused.levels = TRUE) : 
-  tipo inválido (closure) para variável 'dist'
-"
