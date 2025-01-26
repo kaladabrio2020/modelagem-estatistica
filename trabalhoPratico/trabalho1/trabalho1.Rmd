@@ -1,0 +1,659 @@
+---
+title: "Trabalho Modelagem Estátistica 1"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+Importando Libs para o trabalho prático
+
+```{r}
+library(zoo)
+library(tseries)
+library(data.table)
+library(ggplot2)
+library(forecast)
+library(gridExtra)
+library(reshape2)
+library(glmnet)
+```
+
+Lendo Arquivo csv com a lib 'data.table'
+
+```{r}
+dataset = fread("dataset/day.csv", sep = ',')
+```
+
+```{r}
+head(x = dataset, n=4)
+```
+
+Convertendo o atributo dteday para tipo date no R
+
+```{r}
+dataset[, dteday := as.Date(dteday,format = '%d-%m-%Y')]
+```
+
+## Analise de dados
+
+Verificando a quantidade de instancias e colunas do conj. de dados
+
+```{r}
+data.frame(
+    val = c(
+        numero.de.colunas        = length(names(dataset)),
+        quantidade.de.instancias = length(dataset$dteday) 
+    )
+)
+```
+
+Verificando o tipo de cada atributo do conj. de dados, além disso, verificando se possui algum tipo de valor nulo.
+
+```{r}
+# Fazendo a verificação
+result_ = dataset[ , 
+    lapply(.SD,
+            function(x){
+                return(c(class(x), any(is.null(x))))
+            }
+        )
+] 
+# Resultado transposto
+df = transpose(result_, keep.names = 'col')
+
+# Modificando os nomes de cada coluna
+setnames(
+    x = df,
+    new = c('Atributos', 'Tipo do atributo', 'Possui valores nulos?')
+)
+```
+
+```{r}
+df
+```
+
+> Maior parte dos atributos são do tipo númericos e inteiros, também, não possui valores nulos.
+
+Pegandos as colunsa numericas,date, etc.
+
+```{r}
+numeros = df[ (`Tipo do atributo` == 'numeric') | (`Tipo do atributo` == 'integer') ]$Atributos
+numeros
+```
+
+Verificando a quantidade de valores unicos de cada atributo.
+
+```{r}
+# Resultado é transposto para melhor visualização
+transpose(dataset[,
+    lapply( .SD, 
+        function(x){
+            return(c(uniqueN(x), class(x)))
+        }
+     )
+], keep.names = "colunas")
+```
+
+> -   `Season`, `holiday`, `weekday`, `workingday`, `weathersit` são atributos catégoricos. e estão no tipo interger será passado para as.factor tanto para analise quanto para treinamento do modelo
+> -   `dteday` é atrubuto do tipo data e possui valores únicos com mesma quantidade de instancias.
+> -   `instant` é um chave primária pois os valores são únicos com mesma quantidade de instancias.
+> -   Demais atributos são númericos.
+>
+> **OBSERVAÇÃO** : como `instant` é único não será utilizado no modelo e nem será utilzada para demais analises estatisticas
+
+Passando os dados categoricos para as.factor
+
+```{r}
+dataset[, season :=as.factor(season)]
+dataset[, holiday:=as.factor(holiday)]
+dataset[, weekday:=as.factor(weekday)]
+dataset[, workingday:=as.factor(workingday)]
+dataset[, weathersit:=as.factor(weathersit)]
+```
+
+Verificando média, variância, desvio padrão de cada atributo do dataset.
+
+```{r}
+describe = dataset[, 
+    lapply( .SD, 
+            function(x) return(
+                list( as.numeric(mean(x)), max(x), min(x), sd(x), var(x))
+                )
+            ), .SDcols = names(dataset)[10:16]]
+
+dt = transpose(describe, keep.names = c("colunas"),list.cols = TRUE)
+setnames(
+    dt, c("colunas", "média", 'max', "min", 'std', 'var')
+)
+```
+
+```{r}
+dt[ , lapply(.SD, 
+            function(x){
+              if (class(x[1]) == 'character') return(x)
+              return(round(as.numeric(x), 2))
+            })]
+```
+
+```{r}
+849.25+3658.76
+```
+
+> A média de $cnt$ é a soma das médias de $casual$ com $registered$ é um fato interessante, mais há frente haverá uma análise dessas duas colunas com $cnt$
+
+Verificando a densidade dos dados dos atributos númericos
+
+```{r fig.width=15, fig.height=10, dpi=300}
+plots = lapply(numeros[9:15], 
+               function(col) {
+                 ggplot(dataset, aes_string(x = col)) +
+                   geom_histogram(aes(y = ..density..),bins = 30, fill = "#5c9ef6", color = "black") +
+                   geom_density(color = "#FF0000", linewidth = 1, linetype = "dashed", adjust = 1) +
+                   ggtitle(paste("Distribuição de", col))  +
+                  theme_minimal()
+})
+
+# Exibindo o primeiro gráfico como exemplo
+combined_plot <- do.call(grid.arrange, c(plots, ncol = 3))
+```
+
+Fazendo um teste de hipotese para verificar normalidade dos atributos
+
+$$
+H₀: \text{Os dados seguem uma distribuição normal}. \\
+H_1: \text{Os dados não seguem uma distribuição normal}
+$$
+
+```{r}
+print("Para um nivel de significancia de 0.05")
+lapply(numeros[9:15],
+       function(x){
+         value = shapiro.test(dataset[[x]])$p.value
+         
+         if ( value > 0.05) return(c("Aceito H0",x))
+         else return(c("Rejeito H0 para ",x))
+
+       })
+```
+
+> Para um nivel de significancia de 0.05 para todos os atributos acima eu rejeito $H_0$
+
+Verificando se há existencia de outilers no conj. dados
+
+```{r}
+numeros[9:15]
+```
+
+```{r fig.width=10, fig.height=8, dpi=300}
+
+plots  = lapply(
+      numeros[9:15],
+      function(col)
+        {
+        ggplot(dataset, aes_string(y = col)) +
+          geom_boxplot() +
+          theme_minimal()
+                
+      })
+combined_plot <- do.call(grid.arrange, c(plots, ncol = 3)) 
+```
+
+> Os atributos **windspeed, casual e hum** possuem outliers. Não serão removidos esses outliers pois posa ser que essas colunas sejam removidas futuramente. Se não forem será mantido mesmo assim os outliers.
+
+### Verificando a correlação entre target e as features
+
+Modificando o atributo $dteday$ para o formato ano-mes para fazer posteriormente um agrupamento de alugueis totais de cada mes.
+
+```{r}
+dataset[, anoMes := format.Date(dataset$dteday, format = "%Y-%m")]
+```
+
+#### Verificando a série historica dos alugueis
+
+```{r fig.width=10, fig.height=5}
+
+X =  rollapply(dataset$cnt, width = 50, FUN = mean, align = "right", fill = NA)
+
+plot(dataset$cnt, type = 'l', col=1, lwd=1)
+lines(X, col=2, lwd = 3)
+```
+
+> Não podemos ver tendencias nessa serie ou sazonalidades
+
+```{r fig.width=10, fig.height=5}
+
+X =  rollapply(dataset$cnt, width = 50, FUN = mean, align = "right", fill = NA)
+
+plot(dataset$cnt, type = 'p', col=1, lwd=1, lty = 3)
+```
+
+> Podemos ver que o atributo \`cnt\` no decorrer do tempo não possui uma tendencia ou sazonalidade
+
+#### Correlação entre alugueis e temperatura média em relação aos 10 ultimos pontos
+
+```{r fig.width=10, fig.height=4}
+
+roll = rollapply(scale(dataset$temp), FUN=mean, width=10, align='right')
+plot(scale(dataset$cnt), type='l', lwd=2)
+lines(roll, col=2, lwd=3, lty = 1)
+```
+
+> Esse método só permite identificar visualmente se existe um comportamento semelhante entre as variáveis ao longo do tempo. Contudo, podemos ver uma pequena relação entre essa variaveis
+
+```{r}
+cor(dataset$temp, dataset$cnt, method = 'kendall')
+```
+
+> Podemos ver uma no qual quando maior a temperatura maior será os alugueis.
+
+#### Correlação entre alugueis e sensação de temperatura
+
+```{r fig.width=10, fig.height=4}
+
+roll = rollapply(scale(dataset$atemp), FUN=mean, width=10, align='right')
+plot(scale(dataset$cnt), type='l', lwd=2)
+lines(roll, col=2, lwd=3, lty = 1)
+```
+
+> Podemos ver o comportamento entre essas duas variáveis no decorrer do tempo assim como alugueis e temperatura média em relação aos 10 ultimos pontos.
+
+```{r}
+cor(dataset$temp, dataset$cnt, method = 'kendall')
+```
+
+Para treinamento do modelo será utilizado somente sensação termica($atemp$) e não a temperatura real($temp$), pois:
+
+```{r}
+cor(dataset$temp, dataset$atemp)
+```
+
+Os atributos $temp$ e $atemp$ possuem uma correlação altissima e pode surgir um problema conhecido como **multicolinearidade.**
+
+#### Possue alguma relação entre a diferenca de $temp$ e $atemp$ e a target ($cnt$)
+
+```{r}
+cor.test((dataset$temp-dataset$atemp), dataset$cnt, method = 'kendall')
+```
+
+#### Correlação da target($cnt$)e as demais features
+
+```{r}
+numeros = numeros[9:15]
+```
+
+```{r}
+dtCor = round(cor(dataset[,..numeros], method='kendall'), 2)
+dtCor = melt(dtCor)
+```
+
+```{r fig.width=10, fig.height=10}
+
+ggheatmap <- ggplot(dtCor, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(1, 1),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+```
+
+> Será removido correlações baixo de 0.1 seguem abaixo as que serão removidas
+>
+> -   hum
+
+ 
+
+#### Casual e registered
+
+```{r}
+length(dataset$instant)
+```
+
+```{r}
+sum(( dataset$casual + dataset$registered) == (dataset$cnt))
+```
+
+$cnt$ é a soma de $casual$ com $registered$ com isso não faz sentido utilizar para o modelo de regressão já que coloca um viés no modelo
+
+## Ajustando modelo
+
+Será leito novamente o conj. de dados
+
+```{r}
+data = fread("dataset/day.csv", sep = ',')
+```
+
+Removendo atributos que não serão utilizados para treinamento do modelo
+
+```{r}
+# removendo temp
+data[, temp:=NULL]
+
+# removendo dteday
+data[, dteday:=NULL]
+
+# removendo instant
+data[, instant:=NULL]
+
+data[, registered:=NULL]
+
+data[, casual:=NULL]
+
+data[, hum:=NULL]
+```
+
+Modificando o tipo para as.factor
+
+```{r}
+data[, season :=as.factor(season)]
+data[, holiday:=as.factor(holiday)]
+data[, weekday:=as.factor(weekday)]
+data[, workingday:=as.factor(workingday)]
+data[, weathersit:=as.factor(weathersit)]
+data[, yr:=as.factor(yr)]
+data[, mnth:=as.factor(mnth)]
+```
+
+```{r}
+data
+```
+
+Utilizando o forward para encontrar o melhor modelo e parametros desse modelo
+
+```{r}
+# Criando modelo com somente o intercepto
+modelInicial = lm(cnt ~ 1, data=data)
+
+# Criando modelo com todas os atributos
+modelCompleto = lm(cnt~., data = data)
+
+# Selecionando o melhor modelo com stepwise
+bestForward =  step(modelInicial, 
+                    scope=list(
+                        lower=modelInicial, 
+                        upper=modelCompleto
+                    ), 
+                    direction="forward")
+
+# 
+summary(bestForward)
+```
+
+Os parametros maior são estatisticacamente significativo para um nivel de significancia de 0.001
+
+#### Interpretação dos coeficientes
+
+1.  **atemp :** Para cada aumento de 1 grau na sensação térmica, o número de bicicletas alugadas aumenta em aproximadamente 81, mantendo todas as outras variáveis constantes. Isso indica que dias com sensação térmica mais agradável tendem a aumentar a demanda por bicicletas.
+2.  **mnth :** dependendo da mes maior será o numero de alugueis, pois há meses em que o valor do coeficiente é maior.
+3.  **weekday :** dependedo do dia do mes maior será o número de alugueis
+    -   A mesma logica para weathersit e season
+4.  **windspeed :** Para cada aumento de 1 unidade na velocidade do vento, o número de bicicletas alugadas diminui em aproximadamente 31, mantendo todas as outras variáveis constantes. Ventos mais fortes desencorajam o uso de bicicletas.
+
+```{r}
+bestForward
+```
+
+```{r fig.width=10, fig.height=8}
+par(mfrow=c(2, 2))
+plot(bestForward)
+```
+
+```{r}
+formula(bestForward)
+```
+
+#### Comparando modelo proposto
+
+$alugueis = β0 + β1 ·temperatura+ β2 ·vento+ β3 ·precipitacao+ β4 ·feriado+ ε$
+
+```{r}
+model.proposto = lm(cnt~atemp+windspeed+weathersit+workingday,data = data)
+
+summary(model.proposto)
+```
+
+```{r fig.width=10, fig.height=8}
+par(mfrow=c(2, 2))
+plot(model.proposto)
+```
+
+O modelo proposto apesar de ter maioria dos coeficiente estatistiticamente significativos com exclusão workingday. Modelos não desempenhou bons resultados, por exemplo, R2_score é ruim.
+
+## Usando python para criação do modelo
+
+Será feito o mesmo processo no R, com só a mundança na escolha de variaveis e modelos para treinar. Abaixo mostra as libs que serão utilizadas para essa etapa.
+
+```{python}
+import keras
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.linear_model    import Ridge
+from sklearn.ensemble        import ExtraTreesRegressor
+from sklearn.feature_selection import RFE
+from sklearn.preprocessing     import StandardScaler
+```
+
+Lendo o arquivo csv com o pandas
+
+```{python}
+data = pd.read_csv("dataset/day.csv", sep = ',')
+print(data.head(3))
+```
+
+Fazendo o dummies das colunas categoricas (no r foi as.factor)
+
+```{python}
+col = ["season","yr","mnth","holiday","weekday","workingday","weathersit"]
+
+data = pd.get_dummies(data, columns=col, dtype=int)
+```
+
+```{python}
+columns = data.drop(columns=['cnt', 'instant', 'dteday', 'temp', 'casual', 'registered', 'hum']).columns
+```
+
+Removendo as mesmas colunas que fiz usando R
+
+```{python}
+X = data.drop(columns=['cnt', 'instant', 'dteday', 'temp', 'casual', 'registered','hum']).values
+y = data['cnt'].values.reshape(-1, 1)
+```
+
+```{python}
+X.shape, y.shape
+```
+
+### Dividindo treino e teste
+
+```{python}
+xtrain, xtest, ytrain, ytest = train_test_split(X, y, train_size=0.8,random_state=42)
+```
+
+```{python}
+xtrain.shape[0], xtest.shape[0]
+```
+
+### Selecionando as features por meio $RFE$(Eliminação Recursiva de Características)
+
+```{python}
+# Usando florestas extra para seleção de caracterisitcas
+extra = ExtraTreesRegressor(n_estimators=150, max_features='sqrt', random_state=42)
+
+# Chamando a função RFE
+rfe   = RFE(extra, n_features_to_select=10)
+
+# treinando 
+col   = rfe.fit_transform(xtrain,ytrain.ravel())
+```
+
+```{python}
+# As colunas que foram selecionadas foram...
+columns[rfe.get_support()]
+```
+
+> Essa foram as colunas escolhindas
+
+Escalonando as variaveis numericas
+
+```{python}
+# Selecionando colunos para as caracteristicas e escalonando elas
+Xtrain = StandardScaler().fit_transform(xtrain[:, rfe.get_support()])
+Xtest  = StandardScaler().fit_transform(xtest[: ,rfe.get_support()])
+```
+
+Usando o modelo de Ridge e fazendo o gridsearch para escolha dos melhores hiperparametros
+
+```{python}
+grid = GridSearchCV(
+    estimator = Ridge(), 
+    param_grid=dict(
+      alpha=np.around(np.random.RandomState(seed=1).uniform(0.1,1,10),2),
+      max_iter = np.arange(500, 1000, 200),
+      solver  = ['cholesky', 'lsqr','sag']
+    ),
+  )
+grid.fit(Xtrain, ytrain)
+```
+
+Escolhendo os melhores hiperparametros do modelo Ridge
+
+```{python}
+grid.best_estimator_, grid.best_score_
+```
+
+```{python}
+ridge = Ridge(alpha=np.float64(0.75), max_iter=np.int64(500), solver='lsqr')
+ridge.fit(Xtrain, ytrain)
+```
+
+Metricas para os dados de $train$
+
+```{python}
+predTrain = ridge.predict(Xtrain)
+```
+
+```{python}
+r2 = keras.metrics.R2Score()
+r2.update_state(predTrain, ytrain)
+
+mse = keras.metrics.MeanSquaredError()
+mse.update_state(predTrain, ytrain)
+
+mae = keras.metrics.MeanAbsoluteError()
+mae.update_state(predTrain, ytrain)
+
+
+print(f"""
+R2 Score................: {r2.result():.5f}
+Error quadratico médio..: {mse.result():.5f}
+Erro  médio absoluto....: {mae.result():.5f}
+""")
+```
+
+Fazendo validação cruzada para ver se as metricas são constante a cada iteração
+
+```{python}
+from sklearn.model_selection import ShuffleSplit
+
+shuffle = ShuffleSplit(n_splits=12, test_size=0.25)
+
+iter    = []
+r2List  = []
+mseList = []
+for i,(train, test) in enumerate(shuffle.split(Xtrain)):
+  iter.append(i)
+  
+  xtrain_, xtest_ = Xtrain[train,:], Xtrain[test, :]
+  ytrain_, ytest_ = ytrain[train,:], ytrain[test, :]
+  
+  
+  # treinando modelo
+  ridge_ = Ridge(alpha=np.float64(0.8903056927518509), max_iter=np.int64(500), solver='lsqr')
+  ridge_.fit(xtrain_, ytrain_)
+  
+  # predizendo
+  pred_ = ridge_.predict(xtest_)
+   
+  r2 = keras.metrics.R2Score()
+  r2.update_state(predTrain, ytrain)
+  
+  mse = keras.metrics.MeanSquaredError()
+  mse.update_state(predTrain, ytrain)
+  
+  # Adicionando resultados
+  r2List.append(r2.result())
+  mseList.append(mse.result())
+```
+
+Criando um modelo gradiente descente para minimizar os erros
+
+```{python}
+plt.close()
+
+plt.plot(r2List, label='R2 Score')
+plt.plot(mseList, label='Erro quadratico medio')
+plt.xlabel('Iteração')
+plt.legend()
+plt.show()
+```
+
+O modelo está tendo um um bom desempenho agora vamos usar o dados teste que não foram utilizados
+
+```{python}
+pred = ridge.predict(Xtest)
+
+r2 = keras.metrics.R2Score()
+r2.update_state(predTrain, ytrain)
+
+mse = keras.metrics.MeanSquaredError()
+mse.update_state(predTrain, ytrain)
+
+mae = keras.metrics.MeanAbsoluteError()
+mae.update_state(predTrain, ytrain)
+
+
+print(f"""
+R2 Score................: {r2.result():.5f}
+Error quadratico médio..: {mse.result():.5f}
+Erro  médio absoluto....: {mae.result():.5f}
+""")
+```
+
+Apesar do bom resultado e não apresentar overfiting o modelo não é melhor que o modelo criado no R via forward step, dessa forma a escolha do modelo do R é a melhor opção.
+
+Poderia ser utilizado outros modelos que poderiam apresentar um resultado melhor do que no R como redes neurais, xboost-gradient, métodos ensemble. Preferi utilizar Ridge que foi ensinado em sala de aula e se encaixa com a tema da caderia.
+
+## Conclusão
+
+```{r}
+summary(bestForward)
+```
+
+É o modelo escolhido pois desempenhou bons resultados.
+
+```{r}
+formula(bestForward)
+```
