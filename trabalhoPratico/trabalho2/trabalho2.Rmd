@@ -1,0 +1,261 @@
+---
+title: "Trabalho computacional Modelagem Estatistica"
+output: html_notebook
+---
+
+```{r}
+library(data.table)
+library(zoo)
+library(ggplot2) 
+library(GGally) 
+library(zoo)
+library(tseries)
+library(data.table)
+library(ggplot2)
+library(forecast)
+library(gridExtra)
+library(reshape2)
+library(glmnet)
+```
+
+# AirQuality
+
+```{r}
+path = "C:\\Users\\mateu\\Documents\\MEGA\\Matérias UFC CD\\Modelagem Estatistica\\trabalhoPratico\\trabalho2\\dataset\\airquality.csv"
+dataAir = fread(path)
+```
+
+```{r}
+head(dataAir, n = 4)
+```
+
+## Analise exploratória dos dados
+
+Quantidade de instancias
+
+```{r}
+length(dataAir$rownames)
+```
+
+Verificando quantidade de valores únicos
+
+```{r}
+dataAir[, lapply( .SD, uniqueN)]
+```
+
+> Observe que $rownames$ é PK onde a quantidade de valores únicos é igual ao número de linhas do conj. de dados. Será removido do conj. de dados
+
+```{r}
+dataAir[,rownames:=NULL]
+```
+
+Verificando valores nulos no conj. de dados
+
+```{r}
+dataAir[, lapply(.SD, 
+                  FUN = function(x){
+                      return(sum(as.numeric(is.na(x))))
+                      })]
+```
+
+> Ozone tem valores nulos
+
+```{r}
+dataAir[is.na(dataAir$Ozone)==TRUE,.SD]
+```
+
+Removendo os valores nulos
+
+```{r}
+dataAir = na.omit(dataAir, 'Ozone')
+dataAir = na.omit(dataAir, 'Solar.R')
+```
+
+```{r}
+dataAir[, lapply(.SD, 
+                  FUN = function(x){
+                      return(sum(as.numeric(is.na(x))))
+                      })]
+```
+
+> Os dados nulos foram removidos do conjunto de dados
+
+```{r}
+dataAir[, Month:=as.factor(Month)]
+```
+
+```{r fig.width=10, fig.height=6, fig.dpi=300}
+pairs(dataAir)
+```
+
+> Podemos ver que há carecteristicas com relação não linear
+>
+> -   Ozone - Solar.R
+>
+> -   Ozone - Wind
+>
+> -   Ozone - Temp
+
+Verificando a ozonio com base nos meses e dias
+
+```{r}
+subset1_ = dataAir[, mean(Ozone), by=Month]
+
+ggplot(subset1_, aes(x=Month, y=V1)) +
+  geom_bar(stat = "identity", width = 0.5) +
+  geom_text(aes(label = round(V1, 2)), nudge_y = 3)+ 
+  theme_minimal()
+```
+
+> Em média o Ozonio tem maior numeros no mes 8, 7
+
+```{r}
+subset2_ = dataAir[order(Day), mean(Ozone), by=Day]
+
+plot(subset2_, type='l')
+```
+
+Verificando a distribuição de cada atributo
+
+```{r}
+num_cols <- names(dataAir)[sapply(dataAir, is.numeric)]
+num_cols
+```
+
+```{r fig.width=15, fig.height=10, dpi=300}
+plots = lapply(num_cols, 
+               function(col) {
+                 ggplot(dataAir, aes_string(x = col)) +
+                   geom_histogram(aes(y = ..density..),bins = 40, fill = "#5c9ef6", color = "black") +
+                   geom_density(color = "#FF0000", linewidth = 1, linetype = "dashed", adjust = 1) +
+                   ggtitle(paste("Distribuição de", col))  +
+                  theme_minimal()
+})
+
+# Exibindo o primeiro gráfico como exemplo
+combined_plot <- do.call(grid.arrange, c(plots, ncol = 3))
+```
+
+> Vemos que os dados não seguem uma distribuição normal
+
+```{r}
+
+
+for(i in num_cols){
+  p = shapiro.test(dataAir[[i]])$p
+
+  if ( p > 0.05 ){
+    print(c("Seguem uma normal"=c(p, i)))
+  }else{
+    print(c("Não segue uma normal"=c(p, i)))
+    
+  }
+}
+```
+
+Verificando a correlação dos atributos
+
+```{r}
+dtCor = round(cor(dataAir[,..num_cols], method="pearson"), 2)
+dtCor = melt(dtCor)
+```
+
+```{r fig.width=10, fig.height=10}
+
+ggheatmap <- ggplot(dtCor, aes(Var2, Var1, fill = value))+
+ geom_tile(color = "white")+
+ scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+   midpoint = 0, limit = c(-1,1), space = "Lab", 
+    name="Pearson\nCorrelation") +
+  theme_minimal()+ # minimal theme
+ theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+    size = 12, hjust = 1))+
+ coord_fixed()
+
+ggheatmap + 
+geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+theme(
+  axis.title.x = element_blank(),
+  axis.title.y = element_blank(),
+  panel.grid.major = element_blank(),
+  panel.border = element_blank(),
+  panel.background = element_blank(),
+  axis.ticks = element_blank(),
+  legend.justification = c(1, 0),
+  legend.position = c(1, 1),
+  legend.direction = "horizontal")+
+  guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                title.position = "top", title.hjust = 0.5))
+```
+
+## Criando o modelo de regressão linear
+
+Lendo o arquivo novamente
+
+```{r}
+# lendo o arquivo
+path = "C:\\Users\\mateu\\Documents\\MEGA\\Matérias UFC CD\\Modelagem Estatistica\\trabalhoPratico\\trabalho2\\dataset\\airquality.csv"
+dataAir = fread(path)
+
+# Removendo Rownames
+dataAir[, rownames:=NULL]
+
+# removendo valores nulos
+dataAir = na.omit(dataAir, 'Ozone')
+dataAir = na.omit(dataAir, 'Solar.R')
+
+# passando para as factor
+Month_  = as.factor(dataAir$Month)
+days_   = as.factor(dataAir$Day)
+
+# transformação da raiz quadrada
+numCols = names(dataAir)[sapply(dataAir, is.numeric)][1:4]
+
+dataAir = dataAir[, 
+                  lapply(.SD, function(x){return(sqrt(x))}), 
+                  .SDcols = numCols]
+
+dataAir[, Month:=Month_]
+dataAir[, Day:=days_]
+
+
+head(dataAir, 2)
+```
+
+```{r}
+# Criando modelo com somente o intercepto
+modelInicial = lm(Ozone ~ 1, data=dataAir)
+
+# Criando modelo com todas os atributos
+modelCompleto = lm(Ozone~., data = dataAir)
+
+# Selecionando o melhor modelo com stepwise
+bestForward =  step(modelInicial, 
+                    scope=list(
+                        lower=modelInicial, 
+                        upper=modelCompleto
+                    ), 
+                    direction="forward")
+
+# 
+summary(bestForward)
+```
+
+```{r}
+par(mfrow=c(2, 2))
+plot(bestForward)
+```
+
+```{r}
+shapiro.test(bestForward$residuals)
+```
+
+# Sleep Study
+
+```{r}
+path = "C:\\Users\\mateu\\Documents\\MEGA\\Matérias UFC CD\\Modelagem Estatistica\\trabalhoPratico\\trabalho2\\dataset\\sleep.csv"
+
+sleep = fread(path)
+
+head(sleep, 2)
+```
