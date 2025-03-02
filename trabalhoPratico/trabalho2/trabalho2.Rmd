@@ -1,9 +1,16 @@
 ---
-title: "Trabalho computacional Modelagem Estatistica"
-output: html_notebook
+title: "Trabalho computacional ME"
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
 ---
 
+## importando libs
+
 ```{r}
+library(lme4)
 library(data.table)
 library(zoo)
 library(ggplot2) 
@@ -12,7 +19,6 @@ library(zoo)
 library(tseries)
 library(data.table)
 library(ggplot2)
-library(forecast)
 library(gridExtra)
 library(reshape2)
 library(glmnet)
@@ -61,8 +67,11 @@ dataAir[, lapply(.SD,
 > Ozone tem valores nulos
 
 ```{r}
-dataAir[is.na(dataAir$Ozone)==TRUE,.SD]
+dados.null = dataAir[is.na(dataAir$Ozone)==TRUE,.SD]
+dados.null
 ```
+
+> Como a maioria dos dados nulos são a target, vou usar as futuras features para predição dessas target
 
 Removendo os valores nulos
 
@@ -84,17 +93,22 @@ dataAir[, lapply(.SD,
 dataAir[, Month:=as.factor(Month)]
 ```
 
-```{r fig.width=10, fig.height=6, fig.dpi=300}
+Fazendo o pairplot dos atributos para verificar o tipo de relação entre eles se é linear ou não
+
+```{r fig.width=8, fig.height=6, fig.dpi=300}
 pairs(dataAir)
 ```
 
-> Podemos ver que há carecteristicas com relação não linear
->
-> -   Ozone - Solar.R
->
-> -   Ozone - Wind
->
-> -   Ozone - Temp
+```{r}
+air = copy(dataAir)
+```
+
+Fazendo a transformação da raiz quadrada para $Ozone$
+
+```{r}
+air[,Ozone:=sqrt(Ozone)]
+pairs(air)
+```
 
 Verificando a ozonio com base nos meses e dias
 
@@ -109,11 +123,26 @@ ggplot(subset1_, aes(x=Month, y=V1)) +
 
 > Em média o Ozonio tem maior numeros no mes 8, 7
 
+Verificando verificando o dia do mes com maior media de ozonio
+
+```{r}
+subset = dataAir 
+subset[, mes.dia := paste(dataAir$Month, dataAir$Day, sep='-')]
+subset = subset[, mean(Ozone), by=mes.dia][order(V1, decreasing = TRUE)][1]
+subset
+```
+
+> No dia 25 do mes 8 é o dia de com media de maior ozonio
+
+Verificando a media de ozonio em relação aos dias
+
 ```{r}
 subset2_ = dataAir[order(Day), mean(Ozone), by=Day]
 
 plot(subset2_, type='l')
 ```
+
+> o dia 25
 
 Verificando a distribuição de cada atributo
 
@@ -138,29 +167,19 @@ combined_plot <- do.call(grid.arrange, c(plots, ncol = 3))
 
 > Vemos que os dados não seguem uma distribuição normal
 
-```{r}
-
-
-for(i in num_cols){
-  p = shapiro.test(dataAir[[i]])$p
-
-  if ( p > 0.05 ){
-    print(c("Seguem uma normal"=c(p, i)))
-  }else{
-    print(c("Não segue uma normal"=c(p, i)))
-    
-  }
-}
-```
-
 Verificando a correlação dos atributos
 
 ```{r}
-dtCor = round(cor(dataAir[,..num_cols], method="pearson"), 2)
+dataAir[, Month:=as.numeric(Month)]
+dataAir[, mes.dia:=NULL]
+```
+
+```{r}
+dtCor = round(cor(dataAir[,.SD], method="pearson"), 2)
 dtCor = melt(dtCor)
 ```
 
-```{r fig.width=10, fig.height=10}
+```{r fig.width=5, fig.height=5}
 
 ggheatmap <- ggplot(dtCor, aes(Var2, Var1, fill = value))+
  geom_tile(color = "white")+
@@ -199,63 +218,329 @@ dataAir = fread(path)
 
 # Removendo Rownames
 dataAir[, rownames:=NULL]
-
+dataAir[, Day:=NULL]
 # removendo valores nulos
 dataAir = na.omit(dataAir, 'Ozone')
 dataAir = na.omit(dataAir, 'Solar.R')
 
 # passando para as factor
-Month_  = as.factor(dataAir$Month)
-days_   = as.factor(dataAir$Day)
-
-# transformação da raiz quadrada
-numCols = names(dataAir)[sapply(dataAir, is.numeric)][1:4]
-
-dataAir = dataAir[, 
-                  lapply(.SD, function(x){return(sqrt(x))}), 
-                  .SDcols = numCols]
-
-dataAir[, Month:=Month_]
-dataAir[, Day:=days_]
+#dataAir[, Month:=as.factor(Month)]
 
 
-head(dataAir, 2)
+# Transformação logaritmica
+dataAir[, Ozone:=log(Ozone)]
+dataAir[, Wind:=log(Wind)]
+dataAir[, Solar.R:=log(Solar.R)]
+dataAir[, Temp:=log(Temp)]
+
+head(dataAir, 3)
 ```
 
 ```{r}
-# Criando modelo com somente o intercepto
-modelInicial = lm(Ozone ~ 1, data=dataAir)
-
-# Criando modelo com todas os atributos
-modelCompleto = lm(Ozone~., data = dataAir)
-
-# Selecionando o melhor modelo com stepwise
-bestForward =  step(modelInicial, 
-                    scope=list(
-                        lower=modelInicial, 
-                        upper=modelCompleto
-                    ), 
-                    direction="forward")
-
-# 
-summary(bestForward)
+model = lm(Ozone ~. ,data = dataAir)
+model
 ```
+
+```{r}
+summary(model)
+```
+
+-   Intercepto: Representa o nível estimado de Ozone quando todas as variáveis preditoras são zero. No contexto deste modelo, essa interpretação pode não fazer sentido físico, pois valores como Temp = 0 ou Solar.R = 0 podem ser irreais.
+
+-   Solar.R: A cada aumento de 1 unidade em Solar.R (radiação solar), espera-se que o nível de Ozone aumente em 0.29190 unidades, mantendo as outras variáveis constantes. Como o p-valor é muito pequeno, esse efeito é estatisticamente significativo.
+
+-   Wind : Cada aumento de 1 unidade na velocidade do vento (Wind) reduz o nível de Ozone em 0.65866 unidades. Esse coeficiente negativo sugere que ventos mais fortes dispersam o ozônio, diminuindo sua concentração.
+
+-   Temp : Cada aumento de 1 unidade na temperatura (Temp) aumenta o nível de Ozone em 3.47693 unidades. Isso sugere que temperaturas mais altas favorecem a formação de ozônio.
+
+-   Month (não significativo): O coeficiente indica uma leve redução no Ozone à medida que os meses passam, mas o p-valor alto sugere que esse efeito não é estatisticamente significativo. Mas ficara no modelo
 
 ```{r}
 par(mfrow=c(2, 2))
-plot(bestForward)
+plot(model)
 ```
 
+Como a maioria dos dados nulos são a target , então as features serão utilizadas para predição
+
 ```{r}
-shapiro.test(bestForward$residuals)
+x = dados.null[, .SD, .SDcols = names(dados.null)[2:6]]
+x = na.omit(x, 'Solar.R')
+x = x[, Day:=NULL]
+x = x[, Wind:=log(Wind)]
+x = x[, Solar.R:=log(Solar.R)]
+x = x[, Temp:=log(Temp)]
+
+expm1(predict.lm(model, newdata = x, interval = 'prediction'))
+
 ```
+
+> Acima são os valores preditos e seu intervalo de confiança
 
 # Sleep Study
 
 ```{r}
+
 path = "C:\\Users\\mateu\\Documents\\MEGA\\Matérias UFC CD\\Modelagem Estatistica\\trabalhoPratico\\trabalho2\\dataset\\sleep.csv"
 
 sleep = fread(path)
 
 head(sleep, 2)
+```
+
+Verificando únicos
+
+```{r}
+sleep[, lapply(.SD, uniqueN)]
+```
+
+V1 é o numero de intasncia do conj. dados
+
+```{r}
+sleep[, V1:=NULL]
+```
+
+## Analise Exploratória
+
+```{r}
+#sleep[, Days:=as.factor(Days)]
+```
+
+```{r}
+par(mfrow=c(1, 2))
+plot(sleep$Days, sleep$Reaction, pch=19)
+plot(sleep$Reaction, sleep$Subject, pch=2)
+```
+
+## Criando modelo
+
+```{r}
+model.lmer = lmer(Reaction~Days + (1|Subject), data = sleep)
+model.lmer
+```
+
+```{r}
+summary(model.lmer)
+```
+
+-   O efeito fixo de Days é positivo e significativo, sugerindo um crescimento ao longo do tempo.
+-   Existe variação entre indivíduos, pois o desvio padrão dos efeitos aleatórios é alto (37.12).
+-   O modelo ajusta tanto variação sistemática (efeitos fixos) quanto diferenças individuais (efeitos aleatórios).
+
+```{r}
+# QQ plot dos resíduos
+qqnorm(resid(model.lmer))
+qqline(resid(model.lmer), col = "red")
+```
+
+```{r}
+hist(resid(model.lmer), 10)
+```
+
+```{r}
+plot(model.lmer)
+```
+
+# Metanalise
+
+```{r}
+path = "C:\\Users\\mateu\\Documents\\MEGA\\Matérias UFC CD\\Modelagem Estatistica\\trabalhoPratico\\trabalho2\\dataset\\metanalise.csv"
+meta = fread(path)
+
+head(meta, n = 3)
+```
+
+```{r}
+subset = meta[, mean(yi), by=randomized]
+
+
+ggplot(subset, aes(x = randomized, y=V1)) +
+  geom_bar(stat = "identity")
+  
+```
+
+```{r}
+# Pegando o nome do autor
+meta[, cluster_name:=unlist(lapply(meta$cluster, function(x){
+                                              return(c(strsplit(x, ' ',fixed = TRUE))[[1]][1])
+                                          }))
+]
+```
+
+```{r}
+# Pegando o ano
+
+lista_num = unlist(lapply(
+  meta$cluster, function(x){
+    x = c(strsplit(x, ' ', fixed = TRUE))
+    for(i in x[[1]]){
+      
+      string = i
+      string = sub('a', '', string)
+      string = sub('b', '', string)
+      if (!anyNA(suppressWarnings(as.numeric(string)))){
+        return(as.numeric(string))
+    }
+  }})
+)
+
+meta[, cluster_year := lista_num]
+```
+
+Removendo a coluna cluste e V1
+
+```{r}
+meta[, cluster:=NULL]
+meta[, V1:=NULL]
+```
+
+```{r}
+plots = lapply(c("yi", "vi"),
+              function(x){
+                ggplot(data = meta, mapping = aes_string(x = x)) +
+                  geom_histogram(aes(y = ..density..) , bins = 20) + 
+                  geom_density() +
+                  theme_light()
+              })
+
+combined_plot <- do.call(grid.arrange, c(plots, ncol = 2))
+```
+
+```{r}
+shapiro.test(meta$vi)
+```
+
+```{r}
+shapiro.test(meta$yi)
+```
+
+Verificando a presença de outliers nos atributos log da razão de chances e erro padrão
+
+```{r}
+par(mfrow=c(1,2))
+boxplot(meta$yi)
+boxplot(meta$vi)
+```
+
+> Vemos a presença de outliers em ambos atributos
+
+```{r, fig.width=8, fig.height=4}
+ggplot(data = meta, mapping = aes(x = vi, y =yi)) +
+  geom_point(size=4) +
+  theme(legend.position = "none")
+```
+
+> Vemos que o outliers bem distante da concentração dos dados
+
+```{r}
+cor(meta$vi, meta$yi)
+```
+
+Para não remover o outliers vamos ver se a transformação log ou sqrt atenua esse ploblema, além a inversa da log
+
+```{r}
+par(mfrow=c(2, 3))
+
+yi = meta$yi
+vi = meta$vi
+plot(vi, yi)
+title(cor(vi, yi))
+
+plot(vi, expm1(yi))
+title(cor(vi, expm1(yi)))
+
+plot(log1p(vi), expm1(yi))
+title(cor(log1p(vi), expm1(yi)))
+
+plot(sqrt(vi), expm1(yi))
+title(cor(sqrt(vi), expm1(yi)))
+
+plot(log1p(vi), yi)
+title(cor(log1p(vi), yi))
+
+plot(sqrt(vi), yi)
+title(cor(sqrt(vi), yi))
+```
+
+Passando randomized para int
+
+```{r}
+meta[, randomized:=as.integer(randomized)]
+```
+
+Removendo a instancia com outliers
+
+```{r}
+meta.sem.outlier = meta
+```
+
+```{r}
+par(mfrow=c(1, 2))
+boxplot(meta.sem.outlier$yi)
+boxplot(meta.sem.outlier$vi)
+```
+
+> Remover os outliers tendo como base $yi$
+
+```{r}
+remove_outliers_iqr <- function(data, column) {
+  Q1 <- quantile(data[[column]], 0.25, na.rm = TRUE)
+  Q3 <- quantile(data[[column]], 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+
+  data_clean <- data[data[[column]] >= lower_bound & data[[column]] <= upper_bound, ]
+  return(data_clean)
+}
+
+
+meta.sem.outlier = remove_outliers_iqr(meta.sem.outlier, 'yi')
+```
+
+```{r}
+par(mfrow=c(1, 2))
+boxplot(meta.sem.outlier$yi)
+boxplot(meta.sem.outlier$vi)
+```
+
+## Criando Modelo
+
+```{r}
+# Criar modelo inicial
+model.meta <- lm(expm1(yi) ~ ., data = meta)
+
+# Stepwise selection usando AIC
+model.step <- step(model.meta, direction = "both", trace = TRUE)
+
+# Ver resultado final do modelo reduzido
+summary(model.step)
+
+```
+
+```{r}
+summary(model.meta)
+```
+
+```{r}
+par(mfrow=c(2, 2))
+plot(model.meta)
+```
+
+## Criando modelo sem outliers
+
+```{r}
+
+model.meta.sem.outlier = lm(yi ~. , data = meta.sem.outlier)
+
+model.meta.sem.outlier
+```
+
+```{r}
+summary(model.meta.sem.outlier)
+```
+
+```{r}
+par(mfrow=c(2, 2))
+plot(model.meta.sem.outlier)
 ```
